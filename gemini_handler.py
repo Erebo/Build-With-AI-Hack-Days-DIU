@@ -22,7 +22,7 @@ load_dotenv()
 
 # ─── Groq Setup ───────────────────────────────────────────────────────────────
 
-_API_KEY   = os.getenv("GROQ_API_KEY", "")
+_API_KEY    = os.getenv("GROQ_API_KEY", "")
 _MODEL_NAME = "llama-3.3-70b-versatile"   # fast, free-tier friendly
 
 def _client() -> Groq:
@@ -91,12 +91,32 @@ Possible intents and their JSON shapes:
   "question": "What you need to ask the user"
 }}
 
-Rules:
+IMPORTANT RULES — follow these strictly:
+
+TITLE HANDLING:
+- If the user provides ANY words that could serve as a title, use them directly. Do NOT ask for a title.
+- If no clear title is apparent, generate a sensible one from context (e.g. "Meeting", "Appointment", "Task").
+- NEVER ask for a title. Always invent one if needed.
+- Examples: "fix a meeting at 2pm fkgf" → title="fkgf meeting"; "schedule something at 3pm" → title="Appointment"
+
+DATE HANDLING:
 - Resolve relative dates: "today" = {today}, "tomorrow" = {tomorrow}, "next Monday" etc.
+- If no date is mentioned, assume today: {today}.
+
+TIME HANDLING:
 - If duration is implied (e.g. "1-hour meeting") set end_time = start_time + duration.
 - Default duration is 60 minutes if not specified.
-- Pick the most fitting category.
-- If key info is missing (title, date, time), use intent "clarify".
+
+CLARIFY intent:
+- Only use "clarify" if BOTH the date AND time are completely missing and cannot be inferred.
+- NEVER use "clarify" just because the title seems unusual or gibberish. Accept any title.
+- NEVER use "clarify" to ask about meeting purpose or details — just pick "other" as category.
+
+CATEGORY:
+- Pick the most fitting category from: meeting, study, personal, deadline, health, social, work, other.
+- When in doubt, use "meeting" for appointments and "other" for anything else.
+
+OTHER:
 - For greetings or off-topic messages, use "general_chat".
 - Always return ONLY the JSON object. Nothing else.
 
@@ -109,10 +129,8 @@ def _build_system_prompt() -> str:
     today = today_str()
     tomorrow = (date.today() + timedelta(days=1)).isoformat()
 
-    # Summarize upcoming events for context (next 7 days)
-    from datetime import date as dt_date, timedelta as td
     start = today
-    end = (dt_date.today() + td(days=7)).isoformat()
+    end = (date.today() + timedelta(days=7)).isoformat()
     upcoming = cm.get_events_in_range(start, end)
     if upcoming:
         lines = [
@@ -182,7 +200,7 @@ def _execute_action(action: dict) -> tuple[str, dict]:
 
     # ── create_event ──────────────────────────────────────────────────────────
     if intent == "create_event":
-        title      = action.get("title", "Untitled")
+        title      = action.get("title") or "Untitled"
         date_str   = action.get("date", today_str())
         start_time = action.get("start_time", "09:00")
         end_time   = action.get("end_time") or infer_end_time(start_time, 60)
@@ -192,7 +210,9 @@ def _execute_action(action: dict) -> tuple[str, dict]:
         # Conflict check
         conflicts = sched.has_conflict(date_str, start_time, end_time)
         if conflicts:
-            conflict_names = ", ".join(f"**{c['title']}** ({format_time_12h(c['start_time'])})" for c in conflicts)
+            conflict_names = ", ".join(
+                f"**{c['title']}** ({format_time_12h(c['start_time'])})" for c in conflicts
+            )
             suggestion = sched.suggest_next_free_slot(date_str, 60)
             suggest_text = ""
             if suggestion:
@@ -243,7 +263,6 @@ def _execute_action(action: dict) -> tuple[str, dict]:
     # ── query_events ──────────────────────────────────────────────────────────
     elif intent == "query_events":
         date_str = action.get("date", today_str())
-        period   = action.get("period", "day")
         events   = cm.get_events_for_date(date_str)
         date_human = format_date_human(date_str)
 
